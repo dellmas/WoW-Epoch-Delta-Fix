@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: DWD Tooltip Delta Fix
+## Notes: Replaces Epoch's bad stat-compare with correct deltas (Armor, DPS, Str/Agi/Stam/Int/Spi).
+## Author: dellmas
+## Version: 0.1.0
+## X-License: MIT
+
+DWD_TooltipDeltaFix.lua
