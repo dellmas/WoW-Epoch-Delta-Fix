@@ -1,16 +1,18 @@
 -- DWD Tooltip Delta Fix (WotLK 3.3.5)
--- • No Blizzard/Epoch ShoppingTooltip (no yellow block / no flicker)
--- • Deltas only on compare tooltips (not the hovered/main tooltip)
--- • "Currently Equipped" header on compare tooltips
--- • Neat side-by-side layout, clamped on-screen
--- • Skips compare when hovering the item you’re already wearing
--- • Retry + “no empty header” logic for fresh/cold tooltips
+-- • Clean compare tooltips (no flicker / no yellow block)
+-- • Correct deltas (Armor, DPS, Str/Agi/Sta/Int/Spi)
+-- • Works in vendors, inventory, quest rewards, hyperlinks
+-- • Works in trainer/tradeskill recipe tooltips
+-- • "Currently Equipped" header, clamped layout
+-- • Skips compare when hovering equipped slots
+-- • Retry + no-empty-header safeguards
+-- • NEW: Header shows hovered item name: "<item name> changes:"
 
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
-local ALWAYS_SHOW_COMPARE     = true    -- show our compare tooltips without Shift
-local SHOW_DELTAS_ON_MAIN     = false   -- keep main tooltip clean
+local ALWAYS_SHOW_COMPARE     = true
+local SHOW_DELTAS_ON_MAIN     = false
 local SHOW_DELTAS_ON_COMPARE  = true
 local SUPPRESS_WHEN_HOVERING_EQUIPPED = true
 
@@ -33,6 +35,7 @@ end
 local function tonum(s) if not s then return nil end s = s:gsub(",", "") return tonumber(s) end
 local function itemID(link) return link and link:match("item:(%d+):") end
 
+-- equiploc → slot(s)
 local SLOT_SINGLE = {
   INVTYPE_HEAD=1, INVTYPE_NECK=2, INVTYPE_SHOULDER=3, INVTYPE_BODY=4,
   INVTYPE_CHEST=5, INVTYPE_ROBE=5, INVTYPE_WAIST=6, INVTYPE_LEGS=7,
@@ -40,7 +43,6 @@ local SLOT_SINGLE = {
   INVTYPE_RANGED=18, INVTYPE_RANGEDRIGHT=18, INVTYPE_THROWN=18, INVTYPE_RELIC=18,
   INVTYPE_TABARD=19,
 }
-
 local function slotsForEquipLoc(equipLoc)
   if not equipLoc then
     return nil
@@ -60,45 +62,91 @@ local function slotsForEquipLoc(equipLoc)
 end
 
 ------------------------------------------------------------
--- Read stats from tooltip
+-- Parse stats (by link or by reading a shown tooltip's text)
 ------------------------------------------------------------
-local function getStats(link)
+local function parseStatsFromLines(getLine, numLines)
   local st = { ARMOR=0, DPS=nil, STR=0, AGI=0, STA=0, INT=0, SPI=0 }
-  if not link then return st end
-
-  scan:ClearLines()
-  scan:SetHyperlink(link)
-
   local minD, maxD, spd
-  for i = 2, scan:NumLines() do
-    local L = _G["DWDScanTTTextLeft"..i]
-    local s = L and L:GetText()
+  for i = 2, numLines do
+    local s = getLine(i)
     if s then
       local lower = s:lower()
-
-      local a = lower:match("([%d,]+)%s*armor")
-      if a then st.ARMOR = tonum(a) or st.ARMOR end
-
+      local a = lower:match("([%d,]+)%s*armor"); if a then st.ARMOR = tonum(a) or st.ARMOR end
       local v = lower:match("%+(%d+)%s+strength"); if v then st.STR = st.STR + tonumber(v) end
       v = lower:match("%+(%d+)%s+agility");        if v then st.AGI = st.AGI + tonumber(v) end
       v = lower:match("%+(%d+)%s+stamina");        if v then st.STA = st.STA + tonumber(v) end
       v = lower:match("%+(%d+)%s+intellect");      if v then st.INT = st.INT + tonumber(v) end
       v = lower:match("%+(%d+)%s+spirit");         if v then st.SPI = st.SPI + tonumber(v) end
-
       local dps = lower:match("%(([%d%.]+)%s*damage per second%)")
       if dps then st.DPS = tonumber(dps) end
-
-      local d1, d2 = lower:match("(%d+)%s*%-%s*(%d+)%s*damage")
-      if d1 and d2 then minD, maxD = tonumber(d1), tonumber(d2) end
+      local d1, d2 = lower:match("(%d+)%s*%-%s*(%d+)%s*damage"); if d1 and d2 then minD, maxD = tonumber(d1), tonumber(d2) end
       local sp = lower:match("speed%s*([%d%.]+)"); if sp then spd = tonumber(sp) end
     end
   end
-
   if not st.DPS and minD and maxD and spd and spd > 0 then
     st.DPS = ((minD + maxD) / 2) / spd
   end
-
   return st
+end
+
+local function getStatsFromLink(link)
+  if not link then return { ARMOR=0, DPS=nil, STR=0, AGI=0, STA=0, INT=0, SPI=0 } end
+  scan:ClearLines(); scan:SetHyperlink(link)
+  return parseStatsFromLines(function(i) local L=_G["DWDScanTTTextLeft"..i]; return L and L:GetText() end, scan:NumLines())
+end
+
+local function getStatsFromShown(tt)
+  local name = tt:GetName()
+  return parseStatsFromLines(function(i) local L=_G[name.."TextLeft"..i]; return L and L:GetText() end, tt:NumLines())
+end
+
+-- derive equipLoc by reading the visible tooltip (for trainer/recipes)
+local SLOT_WORD_TO_EQUIP = {
+  ["head"] = "INVTYPE_HEAD", ["neck"] = "INVTYPE_NECK", ["shoulder"] = "INVTYPE_SHOULDER",
+  ["shirt"] = "INVTYPE_BODY", ["chest"] = "INVTYPE_CHEST", ["robe"] = "INVTYPE_ROBE",
+  ["waist"] = "INVTYPE_WAIST", ["legs"] = "INVTYPE_LEGS", ["feet"] = "INVTYPE_FEET",
+  ["wrist"] = "INVTYPE_WRIST", ["hands"] = "INVTYPE_HAND", ["finger"] = "INVTYPE_FINGER",
+  ["trinket"] = "INVTYPE_TRINKET", ["back"] = "INVTYPE_CLOAK", ["tabard"] = "INVTYPE_TABARD",
+  ["main hand"] = "INVTYPE_WEAPONMAINHAND", ["off hand"] = "INVTYPE_WEAPONOFFHAND",
+  ["held in off-hand"] = "INVTYPE_HOLDABLE",
+  ["one-hand"] = "INVTYPE_WEAPON", ["two-hand"] = "INVTYPE_2HWEAPON",
+  ["ranged"] = "INVTYPE_RANGED", ["thrown"] = "INVTYPE_THROWN", ["relic"] = "INVTYPE_RELIC",
+}
+local function getEquipLocFromShown(tt)
+  local name = tt:GetName()
+  for i = 2, tt:NumLines() do
+    local s = _G[name.."TextLeft"..i]
+    s = s and s:GetText()
+    if s then
+      local l = s:lower()
+      for key, loc in pairs(SLOT_WORD_TO_EQUIP) do
+        if l:find(key, 1, true) then return loc end
+      end
+    end
+  end
+  return nil
+end
+
+------------------------------------------------------------
+-- Resolve a display name for the header
+------------------------------------------------------------
+local function getDisplayName(newObj, tt, provided)
+  if provided and provided ~= "" then return provided end
+  if type(newObj) == "string" then
+    local n = GetItemInfo(newObj)
+    if n then return n end
+    local bracket = newObj:match("%[(.-)%]")
+    if bracket then return bracket end
+  end
+  if tt and tt.GetName then
+    local l1 = _G[tt:GetName().."TextLeft1"]
+    local t = l1 and l1:GetText()
+    if t then
+      local after = t:match(":%s*(.+)$")
+      return after or t
+    end
+  end
+  return "Correct stat changes"
 end
 
 ------------------------------------------------------------
@@ -113,12 +161,18 @@ local function addDeltaLine(tt, label, delta, isFloat)
   return true
 end
 
-local function appendCorrectDeltas(tt, newLink, oldLink)
-  if tt._dwd_added or not newLink then return false end
-  if oldLink and itemID(newLink) == itemID(oldLink) then return false end
+local function toStats(obj)
+  if type(obj) == "table" then return obj end
+  return getStatsFromLink(obj)
+end
 
-  local N, O = getStats(newLink), getStats(oldLink)
+local function appendCorrectDeltas(tt, newObj, oldObj, dispName)
+  if tt._dwd_added or not newObj then return false end
+  if type(newObj)=="string" and type(oldObj)=="string" and itemID(newObj) and itemID(newObj) == itemID(oldObj) then
+    return false
+  end
 
+  local N, O = toStats(newObj), toStats(oldObj)
   local deltas = {
     { "Armor",              (N.ARMOR or 0) - (O.ARMOR or 0), false },
     { "Damage Per Second",  (N.DPS   or 0) - (O.DPS   or 0), true  },
@@ -130,45 +184,43 @@ local function appendCorrectDeltas(tt, newLink, oldLink)
   }
 
   local any = false
-  for _, d in ipairs(deltas) do
-    if d[2] and d[2] ~= 0 then any = true; break end
-  end
+  for _, d in ipairs(deltas) do if d[2] and d[2] ~= 0 then any = true; break end end
   if not any then return false end
 
-  tt:AddLine("Correct stat changes:", 1, 0.82, 0)
+  local header = (getDisplayName(newObj, tt, dispName) or "Correct stat changes") .. " changes:"
+  tt:AddLine(header, 1, 0.82, 0)
   for _, d in ipairs(deltas) do addDeltaLine(tt, d[1], d[2], d[3]) end
-  tt._dwd_added = true
-  tt:Show()
+  tt._dwd_added = true; tt:Show()
   return true
 end
 
--- Retry wrapper for uncached items (first hover on new chars, etc.)
-local DWDRetryFrame = CreateFrame("Frame")
-DWDRetryFrame:Hide()
+-- Retry wrapper for uncached items (first hovers)
+local DWDRetryFrame = CreateFrame("Frame"); DWDRetryFrame:Hide()
 local pending = {}
-
-DWDRetryFrame:SetScript("OnUpdate", function(self, elapsed)
+DWDRetryFrame:SetScript("OnUpdate", function(self)
   for i = #pending, 1, -1 do
     local p = pending[i]
     if not p.tt:IsShown() or GetTime() > p.deadline then
       table.remove(pending, i)
     else
-      if appendCorrectDeltas(p.tt, p.newLink, p.oldLink) then
+      if appendCorrectDeltas(p.tt, p.newObj, p.oldObj, p.name) then
         table.remove(pending, i)
       end
     end
   end
   if #pending == 0 then self:Hide() end
 end)
-
-local function appendWithRetry(tt, newLink, oldLink)
-  if appendCorrectDeltas(tt, newLink, oldLink) then return end
-  table.insert(pending, { tt = tt, newLink = newLink, oldLink = oldLink, deadline = GetTime() + 0.6 })
+local function appendWithRetry(tt, newObj, oldObj, dispName)
+  if type(newObj) ~= "string" then
+    appendCorrectDeltas(tt, newObj, oldObj, dispName); return
+  end
+  if appendCorrectDeltas(tt, newObj, oldObj, dispName) then return end
+  table.insert(pending, { tt = tt, newObj = newObj, oldObj = oldObj, deadline = GetTime() + 0.6, name = dispName })
   DWDRetryFrame:Show()
 end
 
 ------------------------------------------------------------
--- Remove only the yellow block (keeps base DPS/Armor)
+-- Remove only the yellow block (keeps DPS/Armor)
 ------------------------------------------------------------
 local function scrubYellowBlock(tt)
   if not tt or not tt:GetName() then return end
@@ -192,14 +244,13 @@ local function scrubYellowBlock(tt)
           end
         end
       end
-      tt:Show()
-      return
+      tt:Show(); return
     end
   end
 end
 
 ------------------------------------------------------------
--- Our compare tooltips (no ShoppingTooltip)
+-- Our compare tooltips
 ------------------------------------------------------------
 local DWDCompare1 = CreateFrame("GameTooltip", "DWDCompareTooltip1", UIParent, "GameTooltipTemplate")
 local DWDCompare2 = CreateFrame("GameTooltip", "DWDCompareTooltip2", UIParent, "GameTooltipTemplate")
@@ -208,7 +259,6 @@ for _, f in ipairs(OUR_COMPARES) do
   f:SetClampedToScreen(true)
   f:HookScript("OnTooltipCleared", function(self) self._dwd_added = false; self._dwd_equippedHdr = false end)
 end
-
 local function hideOurCompares() for _, f in ipairs(OUR_COMPARES) do f:Hide() end end
 GameTooltip:HookScript("OnHide", hideOurCompares)
 
@@ -223,59 +273,51 @@ local function addEquippedHeader(tt)
   tt._dwd_equippedHdr = true
 end
 
--- layout
+-- place side-by-side & keep on screen
 local function layoutCompares(mainTT)
   local uiW   = UIParent:GetWidth()
   local left  = mainTT:GetLeft()  or 0
   local right = mainTT:GetRight() or 0
-
   local w1 = DWDCompare1:IsShown() and (DWDCompare1:GetWidth() or 0) or 0
   local w2 = DWDCompare2:IsShown() and (DWDCompare2:GetWidth() or 0) or 0
   local total = w1 + ((w2 > 0 and (COMPARE_X_PAD + w2)) or 0)
-
   local spaceRight = uiW - right - SCREEN_MARGIN
   local spaceLeft  = left - SCREEN_MARGIN
-
   local placeRight = (spaceRight >= total)
   local placeLeft  = (spaceLeft  >= total)
-
   if placeRight then
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints()
-      DWDCompare1:SetPoint("TOPLEFT", mainTT, "TOPRIGHT", COMPARE_X_PAD, COMPARE_Y_PAD)
+      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPLEFT", mainTT, "TOPRIGHT", COMPARE_X_PAD, COMPARE_Y_PAD)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints()
-      DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "TOPRIGHT", COMPARE_X_PAD, 0)
+      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "TOPRIGHT", COMPARE_X_PAD, 0)
     end
   elseif placeLeft then
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints()
-      DWDCompare1:SetPoint("TOPRIGHT", mainTT, "TOPLEFT", -COMPARE_X_PAD, COMPARE_Y_PAD)
+      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPRIGHT", mainTT, "TOPLEFT", -COMPARE_X_PAD, COMPARE_Y_PAD)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints()
-      DWDCompare2:SetPoint("TOPRIGHT", DWDCompare1, "TOPLEFT", -COMPARE_X_PAD, 0)
+      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPRIGHT", DWDCompare1, "TOPLEFT", -COMPARE_X_PAD, 0)
     end
   else
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints()
-      DWDCompare1:SetPoint("TOPLEFT", mainTT, "BOTTOMLEFT", 0, -8)
+      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPLEFT", mainTT, "BOTTOMLEFT", 0, -8)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints()
-      DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "BOTTOMLEFT", 0, -8)
+      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "BOTTOMLEFT", 0, -8)
     end
   end
 end
 
-local function showOurCompare(mainTT, newLink)
+-- show compare tooltips; newObj can be a link (string) or a stats table
+local function showOurCompare(mainTT, newObj, equipLocHint, statsHint, dispName)
   hideOurCompares()
-  if not newLink then return end
-
-  local equipLoc = select(9, GetItemInfo(newLink))
-  local slots = slotsForEquipLoc(equipLoc)
-  if not slots then return end
+  local equipLoc = equipLocHint
+  if not equipLoc and type(newObj) == "string" then
+    equipLoc = select(9, GetItemInfo(newObj))
+  end
+  if not equipLoc then return end
+  local slots = slotsForEquipLoc(equipLoc); if not slots then return end
 
   local shown = 0
   for _, slot in ipairs(slots) do
@@ -288,7 +330,7 @@ local function showOurCompare(mainTT, newLink)
       f:SetInventoryItem("player", slot)
       addEquippedHeader(f)
       if SHOW_DELTAS_ON_COMPARE then
-        appendWithRetry(f, newLink, oldLink)
+        appendWithRetry(f, statsHint or newObj, oldLink, dispName)
       end
       scrubYellowBlock(f)
       f:Show()
@@ -299,10 +341,7 @@ end
 
 -- kill Blizzard/Epoch compare path
 GameTooltip_ShowCompareItem = function() end
-for i = 1, 6 do
-  local s = _G["ShoppingTooltip"..i]
-  if s then s:HookScript("OnShow", function(self) self:Hide() end) end
-end
+for i = 1, 6 do local s = _G["ShoppingTooltip"..i]; if s then s:HookScript("OnShow", function(self) self:Hide() end) end end
 
 ------------------------------------------------------------
 -- Detect hovering an equipped slot
@@ -316,9 +355,7 @@ local function isHoveringEquippedSlot(tt, link)
   if not SUPPRESS_WHEN_HOVERING_EQUIPPED then return false end
   local owner = tt:GetOwner() or GetMouseFocus()
   local name = owner and owner.GetName and owner:GetName()
-
   if name and name:match("^Character.+Slot$") then return true end
-
   local id = itemID(link)
   if id then
     for slot = 1, 19 do
@@ -334,7 +371,7 @@ local function isHoveringEquippedSlot(tt, link)
 end
 
 ------------------------------------------------------------
--- Main tooltip hook
+-- Main tooltip hooks
 ------------------------------------------------------------
 local function patchGameTooltip(tt)
   if not tt or tt._dwd_patched then return end
@@ -343,25 +380,38 @@ local function patchGameTooltip(tt)
 
   tt:HookScript("OnTooltipCleared", function(self) self._dwd_added = false end)
 
+  -- Normal item hovers
   tt:HookScript("OnTooltipSetItem", function(self)
     self._dwd_added = false
-    local _, newLink = self:GetItem()
-    if not newLink then return end
+    local _, newLink = self:GetItem(); if not newLink then return end
 
     if SHOW_DELTAS_ON_MAIN then
       local equipLoc = select(9, GetItemInfo(newLink))
       local slots = slotsForEquipLoc(equipLoc)
       local oldLink = slots and GetInventoryItemLink("player", slots[1]) or nil
-      appendWithRetry(self, newLink, oldLink)
+      appendWithRetry(self, newLink, oldLink, GetItemInfo(newLink))
     end
 
     if ALWAYS_SHOW_COMPARE and not isHoveringEquippedSlot(self, newLink) then
-      showOurCompare(self, newLink)
+      showOurCompare(self, newLink, nil, nil, GetItemInfo(newLink))
     else
       hideOurCompares()
     end
 
     scrubYellowBlock(self)
+  end)
+
+  -- Recipe/trainer tooltips
+  tt:HookScript("OnTooltipSetSpell", function(self)
+    self._dwd_added = false
+    local equipLoc = getEquipLocFromShown(self); if not equipLoc then return end
+    local stats = getStatsFromShown(self)
+    local nameFS = _G[self:GetName().."TextLeft1"]
+    local disp = nameFS and nameFS:GetText() or ""
+    disp = disp:gsub("^.-:%s*", "") -- strip "Blacksmithing: "
+    if ALWAYS_SHOW_COMPARE then
+      showOurCompare(self, stats, equipLoc, stats, disp)
+    end
   end)
 end
 
