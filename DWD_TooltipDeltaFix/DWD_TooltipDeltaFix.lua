@@ -1,18 +1,17 @@
 -- DWD Tooltip Delta Fix (WotLK 3.3.5)
--- • Clean compare tooltips (no flicker / no yellow block)
+-- • Clean compare tooltips (no flicker, strip yellow “If you replace…” block)
 -- • Correct deltas (Armor, DPS, Str/Agi/Sta/Int/Spi)
--- • Works in vendors, inventory, quest rewards, hyperlinks
--- • Works in trainer/tradeskill recipe tooltips
--- • "Currently Equipped" header, clamped layout
--- • Skips compare when hovering equipped slots
--- • Retry + no-empty-header safeguards
--- • NEW: Header shows hovered item name: "<item name> changes:"
+-- • Works in vendors, inventory, quest rewards, hyperlinks, recipes/trainers
+-- • “Currently Equipped” header, clamped layout, side-by-side compares
+-- • Skip compares when hovering your own equipped slots
+-- • Header shows hovered item name: "<item name> changes:"
+-- • Always mirror green, class/form-conditional info onto BOTH main + compare
 
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
 local ALWAYS_SHOW_COMPARE     = true
-local SHOW_DELTAS_ON_MAIN     = false
+local SHOW_DELTAS_ON_MAIN     = false      -- keep false; deltas live on compare tooltips
 local SHOW_DELTAS_ON_COMPARE  = true
 local SUPPRESS_WHEN_HOVERING_EQUIPPED = true
 
@@ -22,7 +21,7 @@ local COMPARE_Y_PAD   = -10
 local SCREEN_MARGIN   = 12
 
 ------------------------------------------------------------
--- Scanner
+-- Hidden scanner tooltip
 ------------------------------------------------------------
 local scan = CreateFrame("GameTooltip", "DWDScanTT", UIParent, "GameTooltipTemplate")
 scan:SetOwner(UIParent, "ANCHOR_NONE")
@@ -35,7 +34,7 @@ end
 local function tonum(s) if not s then return nil end s = s:gsub(",", "") return tonumber(s) end
 local function itemID(link) return link and link:match("item:(%d+):") end
 
--- equiploc → slot(s)
+-- Equip location -> slot(s)
 local SLOT_SINGLE = {
   INVTYPE_HEAD=1, INVTYPE_NECK=2, INVTYPE_SHOULDER=3, INVTYPE_BODY=4,
   INVTYPE_CHEST=5, INVTYPE_ROBE=5, INVTYPE_WAIST=6, INVTYPE_LEGS=7,
@@ -62,7 +61,7 @@ local function slotsForEquipLoc(equipLoc)
 end
 
 ------------------------------------------------------------
--- Parse stats (by link or by reading a shown tooltip's text)
+-- Parse stats
 ------------------------------------------------------------
 local function parseStatsFromLines(getLine, numLines)
   local st = { ARMOR=0, DPS=nil, STR=0, AGI=0, STA=0, INT=0, SPI=0 }
@@ -71,14 +70,18 @@ local function parseStatsFromLines(getLine, numLines)
     local s = getLine(i)
     if s then
       local lower = s:lower()
+      -- Armor
       local a = lower:match("([%d,]+)%s*armor"); if a then st.ARMOR = tonum(a) or st.ARMOR end
+      -- Primary stats
       local v = lower:match("%+(%d+)%s+strength"); if v then st.STR = st.STR + tonumber(v) end
       v = lower:match("%+(%d+)%s+agility");        if v then st.AGI = st.AGI + tonumber(v) end
       v = lower:match("%+(%d+)%s+stamina");        if v then st.STA = st.STA + tonumber(v) end
       v = lower:match("%+(%d+)%s+intellect");      if v then st.INT = st.INT + tonumber(v) end
       v = lower:match("%+(%d+)%s+spirit");         if v then st.SPI = st.SPI + tonumber(v) end
+      -- DPS (explicit)
       local dps = lower:match("%(([%d%.]+)%s*damage per second%)")
       if dps then st.DPS = tonumber(dps) end
+      -- DPS (fallback from damage range + speed)
       local d1, d2 = lower:match("(%d+)%s*%-%s*(%d+)%s*damage"); if d1 and d2 then minD, maxD = tonumber(d1), tonumber(d2) end
       local sp = lower:match("speed%s*([%d%.]+)"); if sp then spd = tonumber(sp) end
     end
@@ -100,7 +103,7 @@ local function getStatsFromShown(tt)
   return parseStatsFromLines(function(i) local L=_G[name.."TextLeft"..i]; return L and L:GetText() end, tt:NumLines())
 end
 
--- derive equipLoc by reading the visible tooltip (for trainer/recipes)
+-- Derive equipLoc by reading visible text (recipe/trainer)
 local SLOT_WORD_TO_EQUIP = {
   ["head"] = "INVTYPE_HEAD", ["neck"] = "INVTYPE_NECK", ["shoulder"] = "INVTYPE_SHOULDER",
   ["shirt"] = "INVTYPE_BODY", ["chest"] = "INVTYPE_CHEST", ["robe"] = "INVTYPE_ROBE",
@@ -128,7 +131,7 @@ local function getEquipLocFromShown(tt)
 end
 
 ------------------------------------------------------------
--- Resolve a display name for the header
+-- Display name for header
 ------------------------------------------------------------
 local function getDisplayName(newObj, tt, provided)
   if provided and provided ~= "" then return provided end
@@ -194,7 +197,7 @@ local function appendCorrectDeltas(tt, newObj, oldObj, dispName)
   return true
 end
 
--- Retry wrapper for uncached items (first hovers)
+-- Retry wrapper for uncached items
 local DWDRetryFrame = CreateFrame("Frame"); DWDRetryFrame:Hide()
 local pending = {}
 DWDRetryFrame:SetScript("OnUpdate", function(self)
@@ -220,7 +223,7 @@ local function appendWithRetry(tt, newObj, oldObj, dispName)
 end
 
 ------------------------------------------------------------
--- Remove only the yellow block (keeps DPS/Armor)
+-- Strip yellow "If you replace this item..." block (if server/UI adds it)
 ------------------------------------------------------------
 local function scrubYellowBlock(tt)
   if not tt or not tt:GetName() then return end
@@ -247,6 +250,64 @@ local function scrubYellowBlock(tt)
       tt:Show(); return
     end
   end
+end
+
+------------------------------------------------------------
+-- ALWAYS show green class/form conditional info on ANY tooltip
+------------------------------------------------------------
+local CLASS_OR_FORM_KEYS = {
+  "cat","bear","dire bear","moonkin",
+  "warrior","paladin","hunter","rogue","priest","shaman","mage","warlock","death knight","deathknight",
+  -- feel free to extend for Epoch-specific forms/classes if any
+}
+
+local function containsAny(hay, list)
+  for _, needle in ipairs(list) do
+    if hay:find(needle, 1, true) then return true end
+  end
+  return false
+end
+
+local function tooltipHasSubstring(tt, substrLow)
+  local name = tt:GetName()
+  for i = 2, tt:NumLines() do
+    local L = _G[name.."TextLeft"..i]
+    local s = L and L:GetText()
+    if s and s:lower():find(substrLow, 1, true) then return true end
+  end
+  return false
+end
+
+-- Collect conditional class/form lines from an item link
+local function getConditionalLinesFromLink(link)
+  if not link then return nil end
+  scan:ClearLines(); scan:SetHyperlink(link)
+  local lines = {}
+  for i = 2, scan:NumLines() do
+    local L = _G["DWDScanTTTextLeft"..i]
+    local s = L and L:GetText()
+    if s then
+      local low = s:lower()
+      -- Heuristic: capture lines that are clearly conditional and class/form related
+      local looksConditional = (low:find("increases", 1, true) or low:find("equip:", 1, true) or low:find("while", 1, true) or low:find("only", 1, true))
+      if looksConditional and containsAny(low, CLASS_OR_FORM_KEYS) then
+        table.insert(lines, s)
+      end
+    end
+  end
+  return (#lines > 0) and lines or nil
+end
+
+local function ensureConditionalInfoShown(tt, itemLink)
+  local lines = getConditionalLinesFromLink(itemLink)
+  if not lines then return end
+  for _, s in ipairs(lines) do
+    local low = s:lower()
+    if not tooltipHasSubstring(tt, low) then
+      tt:AddLine(s, 0, 1, 0) -- green
+    end
+  end
+  tt:Show()
 end
 
 ------------------------------------------------------------
@@ -328,6 +389,10 @@ local function showOurCompare(mainTT, newObj, equipLocHint, statsHint, dispName)
       f:SetOwner(mainTT, "ANCHOR_NONE")
       f._dwd_added = false; f._dwd_equippedHdr = false
       f:SetInventoryItem("player", slot)
+
+      -- Mirror conditional class/form lines that ShoppingTooltip* usually gets
+      ensureConditionalInfoShown(f, oldLink)
+
       addEquippedHeader(f)
       if SHOW_DELTAS_ON_COMPARE then
         appendWithRetry(f, statsHint or newObj, oldLink, dispName)
@@ -339,12 +404,15 @@ local function showOurCompare(mainTT, newObj, equipLocHint, statsHint, dispName)
   layoutCompares(mainTT)
 end
 
--- kill Blizzard/Epoch compare path
+-- Kill Blizzard/Epoch compare path so we fully control it
 GameTooltip_ShowCompareItem = function() end
-for i = 1, 6 do local s = _G["ShoppingTooltip"..i]; if s then s:HookScript("OnShow", function(self) self:Hide() end) end end
+for i = 1, 6 do
+  local s = _G["ShoppingTooltip"..i]
+  if s then s:HookScript("OnShow", function(self) self:Hide() end) end
+end
 
 ------------------------------------------------------------
--- Detect hovering an equipped slot
+-- Hovering equipped slot? (suppress showing compares)
 ------------------------------------------------------------
 local function isChildOf(frame, root)
   while frame do if frame == root then return true end frame = frame:GetParent() end
@@ -385,6 +453,9 @@ local function patchGameTooltip(tt)
     self._dwd_added = false
     local _, newLink = self:GetItem(); if not newLink then return end
 
+    -- Always mirror conditional class/form info onto the MAIN tooltip too
+    ensureConditionalInfoShown(self, newLink)
+
     if SHOW_DELTAS_ON_MAIN then
       local equipLoc = select(9, GetItemInfo(newLink))
       local slots = slotsForEquipLoc(equipLoc)
@@ -401,7 +472,7 @@ local function patchGameTooltip(tt)
     scrubYellowBlock(self)
   end)
 
-  -- Recipe/trainer tooltips
+  -- Recipe/trainer tooltips (no item link available)
   tt:HookScript("OnTooltipSetSpell", function(self)
     self._dwd_added = false
     local equipLoc = getEquipLocFromShown(self); if not equipLoc then return end
