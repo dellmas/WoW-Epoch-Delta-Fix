@@ -333,36 +333,6 @@ local function layoutCompares(mainTT)
   end
 end
 
--- show compare tooltips; newObj can be a link (string) or a stats table
-local function showOurCompare(mainTT, newObj, equipLocHint, statsHint, dispName)
-  hideOurCompares()
-  local equipLoc = equipLocHint
-  if not equipLoc and type(newObj) == "string" then
-    equipLoc = select(9, GetItemInfo(newObj))
-  end
-  if not equipLoc then return end
-  local slots = slotsForEquipLoc(equipLoc); if not slots then return end
-
-  local shown = 0
-  for _, slot in ipairs(slots) do
-    local oldLink = GetInventoryItemLink("player", slot)
-    if oldLink and OUR_COMPARES[shown + 1] then
-      shown = shown + 1
-      local f = OUR_COMPARES[shown]
-      f:SetOwner(mainTT, "ANCHOR_NONE")
-      f._dwd_added = false; f._dwd_equippedHdr = false
-      f:SetInventoryItem("player", slot)
-      addEquippedHeader(f)
-      if SHOW_DELTAS_ON_COMPARE then
-        appendWithRetry(f, statsHint or newObj, oldLink, dispName)
-      end
-      scrubYellowBlock(f)
-      f:Show()
-    end
-  end
-  layoutCompares(mainTT)
-end
-
 -- kill Blizzard/Epoch compare path
 GameTooltip_ShowCompareItem = function() end
 for i = 1, 6 do local s = _G["ShoppingTooltip"..i]; if s then s:HookScript("OnShow", function(self) self:Hide() end) end end
