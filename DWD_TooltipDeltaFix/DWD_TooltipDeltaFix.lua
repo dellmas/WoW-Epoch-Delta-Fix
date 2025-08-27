@@ -297,41 +297,135 @@ local function addEquippedHeader(tt)
   tt._dwd_equippedHdr = true
 end
 
--- place side-by-side & keep on screen
+-- place side-by-side & keep on screen (prefer LEFT of the hovered tooltip)
 local function layoutCompares(mainTT)
+  if not mainTT or not mainTT:IsShown() then return end
+
   local uiW   = UIParent:GetWidth()
   local left  = mainTT:GetLeft()  or 0
   local right = mainTT:GetRight() or 0
+
+  -- Measured widths (may be 0 on first frame); use sensible fallbacks
   local w1 = DWDCompare1:IsShown() and (DWDCompare1:GetWidth() or 0) or 0
   local w2 = DWDCompare2:IsShown() and (DWDCompare2:GetWidth() or 0) or 0
-  local total = w1 + ((w2 > 0 and (COMPARE_X_PAD + w2)) or 0)
+  local panes = (DWDCompare1:IsShown() and 1 or 0) + (DWDCompare2:IsShown() and 1 or 0)
+
+  -- If widths aren’t ready yet, assume ~180px per pane so we can still decide a side
+  local approx = (panes > 0) and (180 * panes + (panes > 1 and COMPARE_X_PAD or 0)) or 0
+  local total  = math.max(w1 + ((w2 > 0 and (COMPARE_X_PAD + w2)) or 0), approx)
+
   local spaceRight = uiW - right - SCREEN_MARGIN
   local spaceLeft  = left - SCREEN_MARGIN
-  local placeRight = (spaceRight >= total)
-  local placeLeft  = (spaceLeft  >= total)
-  if placeRight then
+
+  local placed = false
+
+  -- Try LEFT first
+  if spaceLeft >= total then
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPLEFT", mainTT, "TOPRIGHT", COMPARE_X_PAD, COMPARE_Y_PAD)
+      DWDCompare1:ClearAllPoints()
+      DWDCompare1:SetPoint("TOPRIGHT", mainTT, "TOPLEFT", -COMPARE_X_PAD, COMPARE_Y_PAD)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "TOPRIGHT", COMPARE_X_PAD, 0)
+      DWDCompare2:ClearAllPoints()
+      DWDCompare2:SetPoint("TOPRIGHT", DWDCompare1, "TOPLEFT", -COMPARE_X_PAD, 0)
     end
-  elseif placeLeft then
+    placed = true
+  -- Fall back to RIGHT
+  elseif spaceRight >= total then
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPRIGHT", mainTT, "TOPLEFT", -COMPARE_X_PAD, COMPARE_Y_PAD)
+      DWDCompare1:ClearAllPoints()
+      DWDCompare1:SetPoint("TOPLEFT", mainTT, "TOPRIGHT", COMPARE_X_PAD, COMPARE_Y_PAD)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPRIGHT", DWDCompare1, "TOPLEFT", -COMPARE_X_PAD, 0)
+      DWDCompare2:ClearAllPoints()
+      DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "TOPRIGHT", COMPARE_X_PAD, 0)
     end
-  else
+    placed = true
+  end
+
+  -- Final fallback: stack below the hovered tooltip
+  if not placed then
     if DWDCompare1:IsShown() then
-      DWDCompare1:ClearAllPoints(); DWDCompare1:SetPoint("TOPLEFT", mainTT, "BOTTOMLEFT", 0, -8)
+      DWDCompare1:ClearAllPoints()
+      DWDCompare1:SetPoint("TOPLEFT", mainTT, "BOTTOMLEFT", 0, -8)
     end
     if DWDCompare2:IsShown() then
-      DWDCompare2:ClearAllPoints(); DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "BOTTOMLEFT", 0, -8)
+      DWDCompare2:ClearAllPoints()
+      DWDCompare2:SetPoint("TOPLEFT", DWDCompare1, "BOTTOMLEFT", 0, -8)
     end
   end
 end
+
+
+-- show compare tooltips; newObj can be a link (string) or a stats table
+-- show compare tooltips; newObj can be a link (string) or a stats table
+local function showOurCompare(mainTT, newObj, equipLocHint, statsHint, dispName)
+  hideOurCompares()
+
+  -- Figure out where the item would go
+  local equipLoc = equipLocHint
+  if not equipLoc and type(newObj) == "string" then
+    equipLoc = select(9, GetItemInfo(newObj))
+  end
+  if not equipLoc then return end
+
+  local slots = slotsForEquipLoc(equipLoc)
+  if not slots or #slots == 0 then return end
+
+  local shown = 0
+  local hadAnyEquipped = false
+
+  -- Normal path: show compares for any actually equipped items we’re replacing
+  for _, slot in ipairs(slots) do
+    local oldLink = GetInventoryItemLink("player", slot)
+    if oldLink and OUR_COMPARES[shown + 1] then
+      hadAnyEquipped = true
+      shown = shown + 1
+      local f = OUR_COMPARES[shown]
+      f:SetOwner(mainTT, "ANCHOR_NONE")
+      f._dwd_added = false; f._dwd_equippedHdr = false
+      f:SetInventoryItem("player", slot)
+      -- Add our header and deltas vs the equipped item
+      local displayName = dispName
+      if type(newObj) == "string" and not displayName then displayName = GetItemInfo(newObj) end
+      if SHOW_DELTAS_ON_COMPARE then
+        appendWithRetry(f, statsHint or newObj, oldLink, displayName)
+      end
+      -- Grey "Currently Equipped" prefix
+      local name = f:GetName()
+      local l1 = name and _G[name.."TextLeft1"]
+      if l1 then
+        l1:SetText("|cff7f7f7fCurrently Equipped|r\n"..(l1:GetText() or ""))
+        f._dwd_equippedHdr = true
+      end
+      scrubYellowBlock(f)
+      f:Show()
+    end
+  end
+
+  -- Fallback: if nothing is equipped in those slots, still show ONE compare pane
+  if not hadAnyEquipped and OUR_COMPARES[1] then
+    local f = OUR_COMPARES[1]
+    shown = 1
+    f:SetOwner(mainTT, "ANCHOR_NONE")
+    f._dwd_added = false; f._dwd_equippedHdr = true
+    f:ClearLines()
+    f:AddLine("|cff7f7f7fCurrently Equipped|r", 1, 1, 1)
+    f:AddLine("None", 0.8, 0.8, 0.8)
+
+    local displayName = dispName
+    if type(newObj) == "string" and not displayName then displayName = GetItemInfo(newObj) end
+    -- Compare against nil → zero stats
+    if SHOW_DELTAS_ON_COMPARE then
+      appendWithRetry(f, statsHint or newObj, nil, displayName)
+    end
+    f:Show()
+  end
+
+  -- Place side-by-side and keep on screen
+  layoutCompares(mainTT)
+end
+
 
 -- kill Blizzard/Epoch compare path
 GameTooltip_ShowCompareItem = function() end
