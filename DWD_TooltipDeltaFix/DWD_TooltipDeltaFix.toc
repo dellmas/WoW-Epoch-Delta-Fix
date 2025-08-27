@@ -4,5 +4,6 @@
 ## Author: dellmas
 ## Version: 0.1.0
 ## X-License: MIT
+## OptionalDeps: ElvUI
 
 DWD_TooltipDeltaFix.lua
