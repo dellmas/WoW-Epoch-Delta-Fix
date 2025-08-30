@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: DWD Tooltip Delta Fix: ElvUI Compatibility Plugin
+## Notes: Plugin for DWD Tooltip Delta Fix that adds ElvUI skinning, retail-like anchoring, and Shift-to-show.
+## Author: ZythDr
+## Version: 1.0
+## X-License: MIT
+## RequiredDeps: DWD_TooltipDeltaFix
+## OptionalDeps: ElvUI
+
+DWD_TooltipDeltaFix_ElvUI.lua
