@@ -2,7 +2,7 @@
 ## Title: DWD Tooltip Delta Fix
 ## Notes: Replaces Epoch's bad stat-compare with correct deltas (Armor, DPS, Str/Agi/Stam/Int/Spi).
 ## Author: dellmas
-## Version: 0.1.0
+## Version: 0.1.1
 ## X-License: MIT
 ## OptionalDeps: ElvUI
 
